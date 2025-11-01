@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "soundnet",
+    "soundnet-ctl",
+]
+
+resolver = "2"
