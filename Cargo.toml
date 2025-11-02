@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "soundnet",
-    "soundnet-ctl",
+    "soundnet-ctl", "soundnet-types",
 ]
 
 resolver = "2"
