@@ -2,6 +2,7 @@
 
 **Milestone:** 1 - Project Foundation
 **Depends On:** 1.1
+**Status:** Complete
 
 ## Description
 
