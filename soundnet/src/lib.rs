@@ -1,4 +1,5 @@
 use clap::Parser;
+use figment::providers::Format;
 use tracing::info;
 
 /// A low-latency audio streaming server and client for single-board computers.
@@ -16,12 +17,14 @@ pub async fn run() {
     info!("Using configuration file: {}", args.config);
 
     let config: figment::Figment = figment::Figment::new()
-        .with(figment::providers::Format::Toml, &args.config)
-        .with(figment::providers::Env::prefixed("SOUNDNET_"));
+        .merge(figment::providers::Toml::file(&args.config))
+        .merge(figment::providers::Env::prefixed("SOUNDNET_"));
+
+    let state = soundnet_types::SharedState::new();
 
     // The rest of the application logic will go here.
     // For now, we just idle until Ctrl-C is pressed.
-    info!("Initialization complete. Idling.");
+    info!("Initialization complete. Idling with state: {:?}", state.lock().unwrap());
     tokio::signal::ctrl_c()
         .await
         .expect("failed to listen for ctrl-c");
