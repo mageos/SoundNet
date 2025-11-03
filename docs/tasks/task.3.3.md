@@ -2,6 +2,7 @@
 
 **Milestone:** 3 - Network Streaming
 **Depends On:** 2.3, 3.2
+**Status:** Complete
 
 ## Description
 
