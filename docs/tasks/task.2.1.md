@@ -2,6 +2,7 @@
 
 **Milestone:** 2 - Core Audio I/O
 **Depends On:** 1.3
+**Status:** Complete
 
 ## Description
 
