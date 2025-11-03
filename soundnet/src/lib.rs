@@ -3,6 +3,7 @@ use figment::providers::Format;
 use tracing::info;
 
 pub mod audio;
+pub mod network;
 
 /// A low-latency audio streaming server and client for single-board computers.
 #[derive(Parser, Debug)]
@@ -24,18 +25,24 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     let _state = soundnet_types::SharedState::new();
 
-    let (tx, rx) = tokio::sync::mpsc::channel(1024);
+    // let (tx, rx) = tokio::sync::mpsc::channel(1024);
 
-    let capture_handle = std::thread::spawn(move || {
-        audio::capture(tx).unwrap();
+    // let capture_handle = std::thread::spawn(move || {
+    //     audio::capture(tx).unwrap();
+    // });
+
+    // let playback_handle = std::thread::spawn(move || {
+    //     audio::playback(rx).unwrap();
+    // });
+
+    // capture_handle.join().unwrap();
+    // playback_handle.join().unwrap();
+
+    let broadcast_handle = tokio::spawn(async move {
+        network::broadcast().await.unwrap();
     });
 
-    let playback_handle = std::thread::spawn(move || {
-        audio::playback(rx).unwrap();
-    });
-
-    capture_handle.join().unwrap();
-    playback_handle.join().unwrap();
+    tokio::try_join!(broadcast_handle)?;
 
     Ok(())
 }
@@ -58,7 +65,7 @@ mod tests {
 
     #[test]
     fn test_cli_args_long_config() {
-        let args = Args::try__parse_from(&["soundnet", "--config", "myconfig.toml"]).unwrap();
+        let args = Args::try_parse_from(&["soundnet", "--config", "myconfig.toml"]).unwrap();
         assert_eq!(args.config, "myconfig.toml");
     }
 }
