@@ -2,6 +2,7 @@
 
 **Milestone:** 6 - Management API (REST)
 **Depends On:** 6.1
+**Status:** Complete
 
 ## Description
 

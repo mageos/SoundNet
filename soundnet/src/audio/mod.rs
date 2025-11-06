@@ -1,5 +1,6 @@
 use crate::jitter_buffer::JitterBuffer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use soundnet_types::SharedState;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -32,6 +33,7 @@ pub fn capture(
 
 pub fn playback(
     jitter_buffer: Arc<Mutex<JitterBuffer>>,
+    state: Arc<Mutex<SharedState>>,
 ) -> Result<(), anyhow::Error> {
     let host = cpal::default_host();
     let output_device = host.default_output_device().expect("no output device available");
@@ -41,8 +43,11 @@ pub fn playback(
         &output_config.config(),
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             if let Some(packet) = jitter_buffer.lock().unwrap().get_next_frame() {
+                let volume = state.lock().unwrap().format.volume;
                 let len = std::cmp::min(data.len(), packet.audio_data.len());
-                data[..len].copy_from_slice(&packet.audio_data[..len]);
+                for i in 0..len {
+                    data[i] = packet.audio_data[i] * volume;
+                }
             }
         },
         |err| {

@@ -1,10 +1,14 @@
 use crate::jitter_buffer::JitterBuffer;
 use clap::{Parser, Subcommand};
 use figment::providers::Format;
+use soundnet_types::{DeviceMode, SharedState};
 use std::sync::{Arc, Mutex};
+use tokio::task::JoinHandle;
 use tracing::info;
 
+pub mod api;
 pub mod audio;
+pub mod discovery;
 pub mod jitter_buffer;
 pub mod network;
 
@@ -20,7 +24,7 @@ pub struct Args {
     pub mode: Mode,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum Mode {
     /// Run as a server, broadcasting audio.
     Server,
@@ -32,6 +36,68 @@ pub enum Mode {
     },
 }
 
+pub struct AppState {
+    pub state: Arc<Mutex<SharedState>>,
+    pub tasks: Vec<JoinHandle<()>>,
+}
+
+impl AppState {
+    pub fn new(state: Arc<Mutex<SharedState>>) -> Self {
+        AppState {
+            state,
+            tasks: Vec::new(),
+        }
+    }
+
+    pub fn start_tasks(&mut self, mode: &Mode) {
+        self.stop_tasks();
+
+        let new_mode = match mode {
+            Mode::Server => DeviceMode::Server,
+            Mode::Client { .. } => DeviceMode::Client,
+        };
+
+        match mode {
+            Mode::Server => {
+                let (tx, rx) = tokio::sync::mpsc::channel(1024);
+                let _capture_handle = std::thread::spawn(move || {
+                    audio::capture(tx).unwrap();
+                });
+                let broadcast_handle = tokio::spawn(async move {
+                    network::broadcast(rx).await.unwrap();
+                });
+                self.tasks.push(broadcast_handle);
+            }
+            Mode::Client { jitter_buffer_size } => {
+                let jitter_buffer = Arc::new(Mutex::new(JitterBuffer::new(*jitter_buffer_size as usize)));
+                let jitter_buffer_clone = jitter_buffer.clone();
+
+                let receive_handle = tokio::spawn(async move {
+                    network::receive(jitter_buffer_clone).await.unwrap();
+                });
+
+                let _playback_handle = {
+                    let state = self.state.clone();
+                    std::thread::spawn(move || {
+                        audio::playback(jitter_buffer, state).unwrap();
+                    })
+                };
+
+                self.tasks.push(receive_handle);
+            }
+        }
+        self.state.lock().unwrap().mode = new_mode;
+    }
+
+    pub fn stop_tasks(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+        self.tasks.clear();
+        self.state.lock().unwrap().mode = DeviceMode::Idle;
+    }
+}
+
 pub async fn run() -> Result<(), anyhow::Error> {
     let args = Args::parse();
     info!("SoundNet starting up...");
@@ -41,36 +107,23 @@ pub async fn run() -> Result<(), anyhow::Error> {
         .merge(figment::providers::Toml::file(&args.config))
         .merge(figment::providers::Env::prefixed("SOUNDNET_"));
 
-    let _state = soundnet_types::SharedState::new();
+    let state = SharedState::new();
+    let app_state = Arc::new(Mutex::new(AppState::new(state.clone())));
 
-    match args.mode {
-        Mode::Server => {
-            let (tx, rx) = tokio::sync::mpsc::channel(1024);
-            let capture_handle = std::thread::spawn(move || {
-                audio::capture(tx).unwrap();
-            });
-            let broadcast_handle = tokio::spawn(async move {
-                network::broadcast(rx).await.unwrap();
-            });
-            tokio::try_join!(broadcast_handle)?;
-            capture_handle.join().unwrap();
+    let discovery_handle = tokio::spawn(async move {
+        discovery::listen().await.unwrap();
+    });
+
+    let api_handle = tokio::spawn({
+        let app_state = app_state.clone();
+        async move {
+            api::run(app_state).await.unwrap();
         }
-        Mode::Client { jitter_buffer_size } => {
-            let jitter_buffer = Arc::new(Mutex::new(JitterBuffer::new(jitter_buffer_size as usize)));
-            let jitter_buffer_clone = jitter_buffer.clone();
+    });
 
-            let receive_handle = tokio::spawn(async move {
-                network::receive(jitter_buffer_clone).await.unwrap();
-            });
+    app_state.lock().unwrap().start_tasks(&args.mode);
 
-            let playback_handle = std::thread::spawn(move || {
-                audio::playback(jitter_buffer).unwrap();
-            });
-
-            tokio::try_join!(receive_handle)?;
-            playback_handle.join().unwrap();
-        }
-    }
+    tokio::try_join!(discovery_handle, api_handle)?;
 
     Ok(())
 }

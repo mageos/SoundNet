@@ -2,6 +2,7 @@
 
 **Milestone:** 5 - Device Discovery (UDP)
 **Depends On:** 1.3
+**Status:** Complete
 
 ## Description
 
