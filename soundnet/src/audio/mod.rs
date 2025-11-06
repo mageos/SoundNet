@@ -1,4 +1,6 @@
+use crate::jitter_buffer::JitterBuffer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 pub fn capture(
@@ -29,7 +31,7 @@ pub fn capture(
 }
 
 pub fn playback(
-    mut rx: mpsc::Receiver<Vec<f32>>,
+    jitter_buffer: Arc<Mutex<JitterBuffer>>,
 ) -> Result<(), anyhow::Error> {
     let host = cpal::default_host();
     let output_device = host.default_output_device().expect("no output device available");
@@ -38,10 +40,9 @@ pub fn playback(
     let output_stream = output_device.build_output_stream(
         &output_config.config(),
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            if let Ok(mut audio_data) = rx.try_recv() {
-                let len = std::cmp::min(data.len(), audio_data.len());
-                data[..len].copy_from_slice(&audio_data[..len]);
-                audio_data.drain(..len);
+            if let Some(packet) = jitter_buffer.lock().unwrap().get_next_frame() {
+                let len = std::cmp::min(data.len(), packet.audio_data.len());
+                data[..len].copy_from_slice(&packet.audio_data[..len]);
             }
         },
         |err| {
