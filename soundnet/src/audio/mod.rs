@@ -3,26 +3,33 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use soundnet_types::SharedState;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+use tracing::{error, info};
 
 pub fn capture(
     tx: mpsc::Sender<Vec<f32>>,
 ) -> Result<(), anyhow::Error> {
+    info!("Starting audio capture");
     let host = cpal::default_host();
     let input_device = host.default_input_device().expect("no input device available");
+    info!("Using input device: {}", input_device.name()?);
     let input_config = input_device.default_input_config().unwrap();
+    info!("Input config: {:?}", input_config);
 
     let input_stream = input_device.build_input_stream(
         &input_config.config(),
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            let _ = tx.blocking_send(data.to_vec());
+            if let Err(e) = tx.blocking_send(data.to_vec()) {
+                error!("Failed to send audio data: {}", e);
+            }
         },
         |err| {
-            eprintln!("an error occurred on the input stream: {}", err);
+            error!("an error occurred on the input stream: {}", err);
         },
         None,
     )?;
 
     input_stream.play()?;
+    info!("Audio capture started");
 
     // The stream will run until it's dropped.
     // We need to keep the thread alive, so we'll block here.
@@ -35,9 +42,12 @@ pub fn playback(
     jitter_buffer: Arc<Mutex<JitterBuffer>>,
     state: Arc<Mutex<SharedState>>,
 ) -> Result<(), anyhow::Error> {
+    info!("Starting audio playback");
     let host = cpal::default_host();
     let output_device = host.default_output_device().expect("no output device available");
+    info!("Using output device: {}", output_device.name()?);
     let output_config = output_device.default_output_config().unwrap();
+    info!("Output config: {:?}", output_config);
 
     let output_stream = output_device.build_output_stream(
         &output_config.config(),
@@ -51,12 +61,13 @@ pub fn playback(
             }
         },
         |err| {
-            eprintln!("an error occurred on the output stream: {}", err);
+            error!("an error occurred on the output stream: {}", err);
         },
         None,
     )?;
 
     output_stream.play()?;
+    info!("Audio playback started");
 
     // The stream will run until it's dropped.
     // We need to keep the thread alive, so we'll block here.

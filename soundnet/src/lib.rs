@@ -4,7 +4,7 @@ use figment::providers::Format;
 use soundnet_types::{DeviceMode, SharedState};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{error, info};
 
 pub mod api;
 pub mod audio;
@@ -51,6 +51,7 @@ impl AppState {
 
     pub fn start_tasks(&mut self, mode: &Mode) {
         self.stop_tasks();
+        info!("Starting tasks for mode: {:?}", mode);
 
         let new_mode = match mode {
             Mode::Server => DeviceMode::Server,
@@ -61,10 +62,14 @@ impl AppState {
             Mode::Server => {
                 let (tx, rx) = tokio::sync::mpsc::channel(1024);
                 let _capture_handle = std::thread::spawn(move || {
-                    audio::capture(tx).unwrap();
+                    if let Err(e) = audio::capture(tx) {
+                        error!("Audio capture error: {}", e);
+                    }
                 });
                 let broadcast_handle = tokio::spawn(async move {
-                    network::broadcast(rx).await.unwrap();
+                    if let Err(e) = network::broadcast(rx).await {
+                        error!("Network broadcast error: {}", e);
+                    }
                 });
                 self.tasks.push(broadcast_handle);
             }
@@ -73,13 +78,17 @@ impl AppState {
                 let jitter_buffer_clone = jitter_buffer.clone();
 
                 let receive_handle = tokio::spawn(async move {
-                    network::receive(jitter_buffer_clone).await.unwrap();
+                    if let Err(e) = network::receive(jitter_buffer_clone).await {
+                        error!("Network receive error: {}", e);
+                    }
                 });
 
                 let _playback_handle = {
                     let state = self.state.clone();
                     std::thread::spawn(move || {
-                        audio::playback(jitter_buffer, state).unwrap();
+                        if let Err(e) = audio::playback(jitter_buffer, state) {
+                            error!("Audio playback error: {}", e);
+                        }
                     })
                 };
 
@@ -90,6 +99,7 @@ impl AppState {
     }
 
     pub fn stop_tasks(&mut self) {
+        info!("Stopping tasks");
         for task in &self.tasks {
             task.abort();
         }
@@ -111,13 +121,17 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let app_state = Arc::new(Mutex::new(AppState::new(state.clone())));
 
     let discovery_handle = tokio::spawn(async move {
-        discovery::listen().await.unwrap();
+        if let Err(e) = discovery::listen().await {
+            error!("Discovery listener error: {}", e);
+        }
     });
 
     let api_handle = tokio::spawn({
         let app_state = app_state.clone();
         async move {
-            api::run(app_state).await.unwrap();
+            if let Err(e) = api::run(app_state).await {
+                error!("API server error: {}", e);
+            }
         }
     });
 
