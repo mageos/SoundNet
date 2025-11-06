@@ -1,8 +1,11 @@
+use crate::jitter_buffer::JitterBuffer;
 use clap::{Parser, Subcommand};
 use figment::providers::Format;
+use std::sync::{Arc, Mutex};
 use tracing::info;
 
 pub mod audio;
+pub mod jitter_buffer;
 pub mod network;
 
 /// A low-latency audio streaming server and client for single-board computers.
@@ -22,7 +25,11 @@ pub enum Mode {
     /// Run as a server, broadcasting audio.
     Server,
     /// Run as a client, receiving audio.
-    Client,
+    Client {
+        /// The size of the jitter buffer in milliseconds.
+        #[arg(long, default_value = "20")]
+        jitter_buffer_size: u64,
+    },
 }
 
 pub async fn run() -> Result<(), anyhow::Error> {
@@ -48,14 +55,18 @@ pub async fn run() -> Result<(), anyhow::Error> {
             tokio::try_join!(broadcast_handle)?;
             capture_handle.join().unwrap();
         }
-        Mode::Client => {
-            let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        Mode::Client { jitter_buffer_size } => {
+            let jitter_buffer = Arc::new(Mutex::new(JitterBuffer::new(jitter_buffer_size as usize)));
+            let jitter_buffer_clone = jitter_buffer.clone();
+
             let receive_handle = tokio::spawn(async move {
-                network::receive(tx).await.unwrap();
+                network::receive(jitter_buffer_clone).await.unwrap();
             });
+
             let playback_handle = std::thread::spawn(move || {
-                audio::playback(rx).unwrap();
+                audio::playback(jitter_buffer).unwrap();
             });
+
             tokio::try_join!(receive_handle)?;
             playback_handle.join().unwrap();
         }
