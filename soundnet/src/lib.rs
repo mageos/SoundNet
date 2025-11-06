@@ -1,6 +1,11 @@
 use crate::jitter_buffer::JitterBuffer;
 use clap::{Parser, Subcommand};
-use figment::providers::Format;
+use crossbeam_channel::{unbounded, Sender, Receiver};
+use figment::{
+    providers::{Format, Toml, Env},
+    Figment,
+};
+use serde::Deserialize;
 use soundnet_types::{DeviceMode, SharedState};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
@@ -11,6 +16,13 @@ pub mod audio;
 pub mod discovery;
 pub mod jitter_buffer;
 pub mod network;
+
+#[derive(Deserialize, Debug)]
+pub struct Config {
+    pub friendly_name: String,
+    pub api_port: u16,
+    pub jitter_buffer_size: u64,
+}
 
 /// A low-latency audio streaming server and client for single-board computers.
 #[derive(Parser, Debug)]
@@ -31,21 +43,28 @@ pub enum Mode {
     /// Run as a client, receiving audio.
     Client {
         /// The size of the jitter buffer in milliseconds.
-        #[arg(long, default_value = "20")]
-        jitter_buffer_size: u64,
+        #[arg(long)]
+        jitter_buffer_size: Option<u64>,
     },
 }
 
 pub struct AppState {
     pub state: Arc<Mutex<SharedState>>,
     pub tasks: Vec<JoinHandle<()>>,
+    pub config: Config,
+    stop_tx: Sender<()>,
+    stop_rx: Receiver<()>,
 }
 
 impl AppState {
-    pub fn new(state: Arc<Mutex<SharedState>>) -> Self {
+    pub fn new(state: Arc<Mutex<SharedState>>, config: Config) -> Self {
+        let (stop_tx, stop_rx) = unbounded();
         AppState {
             state,
             tasks: Vec::new(),
+            config,
+            stop_tx,
+            stop_rx,
         }
     }
 
@@ -61,8 +80,9 @@ impl AppState {
         match mode {
             Mode::Server => {
                 let (tx, rx) = tokio::sync::mpsc::channel(1024);
+                let stop_rx = self.stop_rx.clone();
                 let _capture_handle = std::thread::spawn(move || {
-                    if let Err(e) = audio::capture(tx) {
+                    if let Err(e) = audio::capture(tx, stop_rx) {
                         error!("Audio capture error: {}", e);
                     }
                 });
@@ -74,7 +94,8 @@ impl AppState {
                 self.tasks.push(broadcast_handle);
             }
             Mode::Client { jitter_buffer_size } => {
-                let jitter_buffer = Arc::new(Mutex::new(JitterBuffer::new(*jitter_buffer_size as usize)));
+                let size = jitter_buffer_size.unwrap_or(self.config.jitter_buffer_size);
+                let jitter_buffer = Arc::new(Mutex::new(JitterBuffer::new(size as usize)));
                 let jitter_buffer_clone = jitter_buffer.clone();
 
                 let receive_handle = tokio::spawn(async move {
@@ -83,10 +104,11 @@ impl AppState {
                     }
                 });
 
+                let stop_rx = self.stop_rx.clone();
                 let _playback_handle = {
                     let state = self.state.clone();
                     std::thread::spawn(move || {
-                        if let Err(e) = audio::playback(jitter_buffer, state) {
+                        if let Err(e) = audio::playback(jitter_buffer, state, stop_rx) {
                             error!("Audio playback error: {}", e);
                         }
                     })
@@ -100,6 +122,7 @@ impl AppState {
 
     pub fn stop_tasks(&mut self) {
         info!("Stopping tasks");
+        self.stop_tx.send(()).ok();
         for task in &self.tasks {
             task.abort();
         }
@@ -113,25 +136,30 @@ pub async fn run() -> Result<(), anyhow::Error> {
     info!("SoundNet starting up...");
     info!("Using configuration file: {}", args.config);
 
-    let _config: figment::Figment = figment::Figment::new()
-        .merge(figment::providers::Toml::file(&args.config))
-        .merge(figment::providers::Env::prefixed("SOUNDNET_"));
+    let config: Config = Figment::new()
+        .merge(Toml::file(&args.config))
+        .merge(Env::prefixed("SOUNDNET_"))
+        .extract()?;
 
     let state = SharedState::new();
-    let app_state = Arc::new(Mutex::new(AppState::new(state.clone())));
+    state.lock().unwrap().friendly_name = config.friendly_name.clone();
+    state.lock().unwrap().api_port = config.api_port;
 
-    let discovery_handle = tokio::spawn(async move {
-        if let Err(e) = discovery::listen().await {
-            error!("Discovery listener error: {}", e);
+    let app_state = Arc::new(Mutex::new(AppState::new(state.clone(), config)));
+
+    let discovery_handle = tokio::spawn({
+        let state = state.clone();
+        async move {
+            if let Err(e) = discovery::listen(state).await {
+                error!("Discovery listener error: {}", e);
+            }
         }
     });
 
     let api_handle = tokio::spawn({
         let app_state = app_state.clone();
         async move {
-            if let Err(e) = api::run(app_state).await {
-                error!("API server error: {}", e);
-            }
+            api::run(app_state).await.unwrap();
         }
     });
 

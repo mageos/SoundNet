@@ -1,13 +1,14 @@
 use soundnet_types::discovery::{DiscoveryRequest, DiscoveryResponse};
-use soundnet_types::DeviceMode;
+use soundnet_types::SharedState;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
+use std::sync::{Arc, Mutex};
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info};
 
 const DISCOVERY_MULTICAST_ADDR: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x1235);
 const DISCOVERY_PORT: u16 = 54322;
 
-pub async fn listen() -> Result<(), anyhow::Error> {
+pub async fn listen(state: Arc<Mutex<SharedState>>) -> Result<(), anyhow::Error> {
     info!("Starting discovery listener");
     let socket = UdpSocket::bind(SocketAddr::V6(SocketAddrV6::new(
         Ipv6Addr::UNSPECIFIED,
@@ -27,10 +28,19 @@ pub async fn listen() -> Result<(), anyhow::Error> {
                     Ok(request) => {
                         debug!("Received discovery request from {}: {:?}", addr, request);
 
+                        let (friendly_name, mode, api_port) = {
+                            let state = state.lock().unwrap();
+                            (
+                                state.friendly_name.clone(),
+                                state.mode.clone(),
+                                state.api_port,
+                            )
+                        };
+
                         let response = DiscoveryResponse {
-                            friendly_name: "SoundNet Device".to_string(),
-                            mode: DeviceMode::Idle, // TODO: get the actual mode
-                            api_port: 8080, // TODO: get the actual port
+                            friendly_name,
+                            mode,
+                            api_port,
                         };
 
                         match bincode::serialize(&response) {

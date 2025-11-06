@@ -1,5 +1,6 @@
 use crate::jitter_buffer::JitterBuffer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use crossbeam_channel::Receiver;
 use soundnet_types::SharedState;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -7,6 +8,7 @@ use tracing::{error, info};
 
 pub fn capture(
     tx: mpsc::Sender<Vec<f32>>,
+    stop_rx: Receiver<()>,
 ) -> Result<(), anyhow::Error> {
     info!("Starting audio capture");
     let host = cpal::default_host();
@@ -31,16 +33,17 @@ pub fn capture(
     input_stream.play()?;
     info!("Audio capture started");
 
-    // The stream will run until it's dropped.
-    // We need to keep the thread alive, so we'll block here.
-    std::thread::park();
+    // Block until a stop signal is received.
+    stop_rx.recv()?;
 
+    info!("Stopping audio capture");
     Ok(())
 }
 
 pub fn playback(
     jitter_buffer: Arc<Mutex<JitterBuffer>>,
     state: Arc<Mutex<SharedState>>,
+    stop_rx: Receiver<()>,
 ) -> Result<(), anyhow::Error> {
     info!("Starting audio playback");
     let host = cpal::default_host();
@@ -69,9 +72,9 @@ pub fn playback(
     output_stream.play()?;
     info!("Audio playback started");
 
-    // The stream will run until it's dropped.
-    // We need to keep the thread alive, so we'll block here.
-    std::thread::park();
+    // Block until a stop signal is received.
+    stop_rx.recv()?;
 
+    info!("Stopping audio playback");
     Ok(())
 }
