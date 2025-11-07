@@ -2,6 +2,7 @@
 
 **Milestone:** 8 - Finalization & Documentation
 **Depends On:** 8.2
+**Status:** Complete
 
 ## Description
 

@@ -20,13 +20,16 @@ pub struct AudioFormat {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SharedState {
+    pub friendly_name: String,
     pub mode: DeviceMode,
     pub format: AudioFormat,
+    pub api_port: u16,
 }
 
 impl SharedState {
     pub fn new() -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self {
+            friendly_name: "SoundNet Device".to_string(),
             mode: DeviceMode::Idle,
             format: AudioFormat {
                 codec: "opus".to_string(),
@@ -34,6 +37,7 @@ impl SharedState {
                 bitrate: 64000,
                 volume: 1.0,
             },
+            api_port: 8080,
         }))
     }
 }

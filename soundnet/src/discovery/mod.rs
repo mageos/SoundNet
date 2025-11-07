@@ -1,12 +1,15 @@
 use soundnet_types::discovery::{DiscoveryRequest, DiscoveryResponse};
-use soundnet_types::DeviceMode;
+use soundnet_types::SharedState;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
+use std::sync::{Arc, Mutex};
 use tokio::net::UdpSocket;
+use tracing::{debug, error, info};
 
 const DISCOVERY_MULTICAST_ADDR: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x1235);
 const DISCOVERY_PORT: u16 = 54322;
 
-pub async fn listen() -> Result<(), anyhow::Error> {
+pub async fn listen(state: Arc<Mutex<SharedState>>) -> Result<(), anyhow::Error> {
+    info!("Starting discovery listener");
     let socket = UdpSocket::bind(SocketAddr::V6(SocketAddrV6::new(
         Ipv6Addr::UNSPECIFIED,
         DISCOVERY_PORT,
@@ -15,22 +18,50 @@ pub async fn listen() -> Result<(), anyhow::Error> {
     )))
     .await?;
     socket.join_multicast_v6(&DISCOVERY_MULTICAST_ADDR, 0)?;
+    info!("Listening for discovery requests on {}:{}", DISCOVERY_MULTICAST_ADDR, DISCOVERY_PORT);
 
     let mut buf = [0u8; 1024];
     loop {
-        let (len, addr) = socket.recv_from(&mut buf).await?;
-        let request: DiscoveryRequest = bincode::deserialize(&buf[..len])?;
+        match socket.recv_from(&mut buf).await {
+            Ok((len, addr)) => {
+                match bincode::deserialize::<DiscoveryRequest>(&buf[..len]) {
+                    Ok(request) => {
+                        debug!("Received discovery request from {}: {:?}", addr, request);
 
-        // For now, we just print the request. We will respond to it later.
-        println!("received discovery request from {}: {:?}", addr, request);
+                        let (friendly_name, mode, api_port) = {
+                            let state = state.lock().unwrap();
+                            (
+                                state.friendly_name.clone(),
+                                state.mode.clone(),
+                                state.api_port,
+                            )
+                        };
 
-        let response = DiscoveryResponse {
-            friendly_name: "SoundNet Device".to_string(),
-            mode: DeviceMode::Idle, // TODO: get the actual mode
-            api_port: 8080, // TODO: get the actual port
-        };
+                        let response = DiscoveryResponse {
+                            friendly_name,
+                            mode,
+                            api_port,
+                        };
 
-        let serialized_response = bincode::serialize(&response)?;
-        socket.send_to(&serialized_response, &addr).await?;
+                        match bincode::serialize(&response) {
+                            Ok(serialized_response) => {
+                                if let Err(e) = socket.send_to(&serialized_response, &addr).await {
+                                    error!("Failed to send discovery response: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to serialize discovery response: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to deserialize discovery request: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to receive discovery request: {}", e);
+            }
+        }
     }
 }
